@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from tqdm import tqdm
 import argparse
 import lzma
 import os
@@ -12,6 +13,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_error
 from sklearn.linear_model import LinearRegression, Ridge
+import wandb
 
 
 class Dataset:
@@ -40,7 +42,7 @@ class Dataset:
             print("Downloading dataset {}...".format(name))
             urllib.request.urlretrieve(url + name, filename=name)
 
-        # Load the dataset and return the data and targets.
+            # Load the dataset and return the data and targets.
         dataset = np.load(name)
         for key, value in dataset.items():
             setattr(self, key, value)
@@ -50,63 +52,88 @@ parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--predict", default=None, type=str, help="Run prediction on given data")
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
-parser.add_argument("--seed", default=None, type=int, help="Random seed")
+parser.add_argument("--seed", default=32, type=int, help="Random seed")
 # For these and any other arguments you add, ReCodEx will keep your default value.
 parser.add_argument("--model_path", default="rental_competition.model", type=str, help="Model path")
-parser.add_argument("--dev_size", default="0.15", type=float, help="Development set size")
+parser.add_argument("--dev_size", default=0.10, type=float, help="Development set size")
 parser.add_argument("--plot", default=True, const=True, nargs="?", type=str, help="Plot the predictions")
-parser.add_argument("--seed_count", default=1, type=int, help="Seed count")
+parser.add_argument("--batch_size", default=50, type=int, help="Batch size")
+parser.add_argument("--epochs", default=500, type=int, help="Number of SGD iterations over the data")
+parser.add_argument("--learning_rate", default=0.01, type=float, help="Learning rate")
+parser.add_argument("--alpha", default=0, type=int, help="L2 rate")
 
 
 def main(args):
-    if args.predict is None:
+    generator = np.random.RandomState(args.seed)
+    if args.predict == "ridge":
+        wandb.init(project="npfl129", name="RIDGE BASELINE")
+        np.random.seed(args.seed)
         dataset = Dataset()
-        dataset.data = np.append(dataset.data, np.ones([dataset.data.shape[0], 1]), axis=1)
-        alphas = np.linspace(1, 70, num=100)
-        rmses = np.empty((args.seed_count, len(alphas)))
 
+        dataset.data = np.append(dataset.data, np.ones([dataset.data.shape[0], 1]), axis=1)
+        train_data, dev_data, train_target, dev_target = train_test_split(dataset.data, dataset.target,
+                                                                          test_size=args.dev_size,
+                                                                          random_state=args.seed)
+        ints = np.all(train_data.astype(int) == train_data, axis=0)
+        ct = ColumnTransformer([("OneHot", OneHotEncoder(sparse=False, handle_unknown="ignore"), ints),
+                                ("Normalize", StandardScaler(), ~ints)])
+        pf = PolynomialFeatures(3, include_bias=False)
+        pipeline = Pipeline([
+            ("Feature Preprocessing", ct),
+            ("Polynomial Features 3rd degree", pf),
+            ("Linear Model", Ridge(alpha=10))
+        ])
+        model = pipeline.fit(train_data, train_target)
+        loss = mean_squared_error(model.predict(dev_data), dev_target, squared=False)
+        for epoch in range(args.epochs):
+            wandb.log({"dev_rmse": loss})
+    elif args.predict is None:
+        wandb.init(project="npfl129", name="init_rental_alpha_competition")
+        wandb.config.update(args)
+        dataset = Dataset()
+        np.random.seed(args.seed)
+
+        dataset.data = np.append(dataset.data, np.ones([dataset.data.shape[0], 1]), axis=1)
         ints = np.all(dataset.data.astype(int) == dataset.data, axis=0)
         ct = ColumnTransformer([
             ("OneHot", OneHotEncoder(sparse=False, handle_unknown="ignore"), ints),
             ("Normalize", StandardScaler(), ~ints)
         ])
         pf = PolynomialFeatures(3, include_bias=False)
+        preprocessing = Pipeline([
+            ("Feature Preprocessing", ct),
+            ("Polynomial Features 3rd degree", pf)
+        ])
+        dataset.data = preprocessing.fit_transform(dataset.data)
+        train_data, dev_data, train_target, dev_target = train_test_split(dataset.data, dataset.target,
+                                                                          test_size=args.dev_size,
+                                                                          random_state=args.seed)
+        weights = generator.uniform(size=train_data.shape[1])
+        train_rmses, dev_rmses = [], []
+        for epoch in tqdm(range(args.epochs)):
+            permutation = generator.permutation(train_data.shape[0])
 
-        models = []
-        for alpha in alphas:
-            model = Pipeline([
-                ("Feature Preprocessing", ct),
-                ("Polynomial Features 3rd degree", pf),
-                ("Ridge Model alpha={}".format(alpha), Ridge(alpha))
-            ], verbose=True)
-            models.append(model)
+            for i in range(train_data.shape[0] // args.batch_size):
+                batch_data = train_data[permutation[i * args.batch_size:(i + 1) * args.batch_size]]
+                batch_target = train_target[permutation[i * args.batch_size:(i + 1) * args.batch_size]]
+                batch_prediction = np.matmul(batch_data, weights)
+                gradient = (np.matmul(batch_data.T, batch_prediction) + args.alpha * weights - np.matmul(batch_data.T,
+                                                                                                         batch_target)) / args.batch_size
+                weights = weights - args.learning_rate * gradient
 
-        trained_models = []
-        for i in range(args.seed_count):
-            np.random.seed(args.seed)
-            train_data, dev_data, train_target, dev_target = train_test_split(dataset.data, dataset.target,
-                                                                              test_size=args.dev_size,
-                                                                              random_state=args.seed)
-            trained_models = list(map(lambda model: model.fit(train_data, train_target), models))
-            predictions = map(lambda model: model.predict(dev_data), trained_models)
-            rmses_tmp = map(lambda prediction: mean_squared_error(prediction, dev_target, squared=False), predictions)
-            rmses[i, :] = np.asarray(list(rmses_tmp))
-
-        mean_rmses = rmses.mean(axis=0)
-        std_rmses = rmses.std(axis=0)
-        best_alpha = alphas[mean_rmses.argmin()]
-        best_model = trained_models[mean_rmses.argmin()]
-        best_rmse = mean_rmses.min()
-
-        print("Best result", best_rmse, "achieved with alpha =", best_alpha)
+            train_rmse = mean_squared_error(np.matmul(train_data, weights), train_target, squared=False)
+            dev_rmse = mean_squared_error(np.matmul(dev_data, weights), dev_target, squared=False)
+            wandb.log({"train_rmse": train_rmse, "dev_rmse": dev_rmse})
+            train_rmses.append(train_rmse)
+            dev_rmses.append(dev_rmse)
 
         if args.plot:
             import matplotlib.pyplot as plt
-            plt.errorbar(alphas, mean_rmses, yerr=std_rmses)
-            plt.xscale("log")
-            plt.xlabel("L2 regularization strength")
+            plt.plot(train_rmses, label="Train")
+            plt.plot(dev_rmses, label="Dev")
+            plt.xlabel("Epochs")
             plt.ylabel("RMSE")
-            args.plot = "RMSE_lambda"
+            args.plot = "SGD"
             if args.plot is True:
                 plt.show()
             else:
@@ -115,8 +142,8 @@ def main(args):
                 plt.show()
 
         # Serialize the model.
-        with lzma.open(args.model_path, "wb") as model_file:
-            pickle.dump(best_model, model_file)
+        # with lzma.open(args.model_path, "wb") as model_file:
+        #     pickle.dump(best_model, model_file + "ridge_alpha10")
 
     else:
         # Use the model and return test set predictions, as either a Python list or a NumPy array.
