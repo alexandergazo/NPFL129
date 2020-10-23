@@ -12,7 +12,7 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder, PolynomialFeatu
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_error
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.linear_model import LinearRegression, Ridge, RidgeCV, SGDRegressor
 import wandb
 
 
@@ -35,6 +35,7 @@ class Dataset:
 
     The target variable is the number of rentals in the given hour.
     """
+
     def __init__(self,
                  name="rental_competition.train.npz",
                  url="https://ufal.mff.cuni.cz/~straka/courses/npfl129/2021/datasets/"):
@@ -50,7 +51,7 @@ class Dataset:
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--predict", default=None, type=str, help="Run prediction on given data")
+parser.add_argument("--predict", default="ridgeCV", type=str, help="Run prediction on given data")
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
 parser.add_argument("--seed", default=32, type=int, help="Random seed")
 # For these and any other arguments you add, ReCodEx will keep your default value.
@@ -65,7 +66,32 @@ parser.add_argument("--alpha", default=0, type=int, help="L2 rate")
 
 def main(args):
     generator = np.random.RandomState(args.seed)
-    if args.predict == "ridge":
+    if args.predict == "ridgeCV":
+        wandb.init(project="npfl129", name="SGD_REGRESSOR")
+        np.random.seed(args.seed)
+        dataset = Dataset()
+
+        dataset.data = np.append(dataset.data, np.ones([dataset.data.shape[0], 1]), axis=1)
+        train_data, dev_data, train_target, dev_target = train_test_split(dataset.data, dataset.target,
+                                                                          test_size=args.dev_size,
+                                                                          random_state=args.seed)
+        ints = np.all(train_data.astype(int) == train_data, axis=0)
+        ct = ColumnTransformer([("OneHot", OneHotEncoder(sparse=False, handle_unknown="ignore"), ints),
+                                ("Normalize", StandardScaler(), ~ints)])
+        pf = PolynomialFeatures(3, include_bias=False)
+        alphas = np.geomspace(0.1, 70, 200)
+        pipelines = [Pipeline([
+            ("Feature Preprocessing", ct),
+            ("Polynomial Features 3rd degree", pf),
+            ("Linear Model", SGDRegressor(alpha=alpha))
+        ]) for alpha in alphas]
+        models = map(lambda m: m.fit(train_data, train_target), pipelines)
+        losses = map(lambda model: mean_squared_error(model.predict(dev_data), dev_target, squared=False), models)
+        # wandb.log({"Alphas SGD": wandb.plot.line(
+        #     wandb.Table(data=[[x, y] for x, y in zip(alphas, losses)], columns=["x", "y"]), "x", "y")})
+        for alpha, loss in zip(alphas, losses):
+            wandb.log({"Loss": loss, "Alpha": alpha})
+    elif args.predict == "ridge":
         wandb.init(project="npfl129", name="RIDGE BASELINE")
         np.random.seed(args.seed)
         dataset = Dataset()
@@ -110,7 +136,7 @@ def main(args):
                                                                           random_state=args.seed)
         weights = generator.uniform(size=train_data.shape[1])
         train_rmses, dev_rmses = [], []
-        for epoch in tqdm(range(args.epochs)):
+        for _ in tqdm(range(args.epochs)):
             permutation = generator.permutation(train_data.shape[0])
 
             for i in range(train_data.shape[0] // args.batch_size):
