@@ -12,7 +12,6 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_error
 from sklearn.linear_model import LinearRegression, Ridge, RidgeCV, SGDRegressor
-import wandb
 from LinearRegressionSGD import LinearRegressionSGD
 
 
@@ -51,29 +50,31 @@ class Dataset:
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--predict", default=None, type=str, help="Run prediction on given data")
+parser.add_argument("--predict", default="gridCV", type=str, help="Run prediction on given data")
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
 parser.add_argument("--seed", default=32, type=int, help="Random seed")
 # For these and any other arguments you add, ReCodEx will keep your default value.
 parser.add_argument("--model_path", default="rental_competition.model", type=str, help="Model path")
 parser.add_argument("--dev_size", default=0.10, type=float, help="Development set size")
-parser.add_argument("--plot", default=False, const=True, nargs="?", type=str, help="Plot the predictions")
-parser.add_argument("--batch_size", default=20, type=int, help="Batch size")
-parser.add_argument("--epochs", default=200, type=int, help="Number of SGD iterations over the data")
-parser.add_argument("--learning_rate", default=0.003, type=float, help="Learning rate")
-parser.add_argument("--alpha", default=0.01, type=int, help="L2 rate")
+parser.add_argument("--plot", default=True, const=True, nargs="?", type=str, help="Plot the predictions")
+parser.add_argument("--batch_size", default=50, type=int, help="Batch size")
+parser.add_argument("--epochs", default=500, type=int, help="Number of SGD iterations over the data")
+parser.add_argument("--learning_rate", default=0.01, type=float, help="Learning rate")
+parser.add_argument("--alpha", default=0, type=int, help="L2 rate")
 
 
 def main(args):
     generator = np.random.RandomState(args.seed)
     if args.predict == "gridCV":
-        # wandb.init(project="npfl129", name="GridCV")
         np.random.seed(args.seed)
         dataset = Dataset()
         dataset.data = np.append(dataset.data, np.ones([dataset.data.shape[0], 1]), axis=1)
-        train_data, dev_data, train_target, dev_target = train_test_split(dataset.data, dataset.target,
-                                                                          test_size=args.dev_size,
-                                                                          random_state=args.seed)
+        if args.dev_size != 0:
+            train_data, dev_data, train_target, dev_target = \
+                train_test_split(dataset.data, dataset.target,
+                test_size=args.dev_size, random_state=args.seed)
+        else:
+            train_data, train_target = dataset.data, dataset.target
         ints = np.all(train_data.astype(int) == train_data, axis=0)
         ct = ColumnTransformer([("OneHot", OneHotEncoder(sparse=False, handle_unknown="ignore"), ints),
                                 ("Normalize", StandardScaler(), ~ints)])
@@ -82,27 +83,27 @@ def main(args):
             ("PF", PolynomialFeatures(3, include_bias=False))
         ])
         trainer = GridSearchCV(
-            LinearRegressionSGD(random_state=args.seed, epochs=60),
-            {'alpha': np.geomspace(1, 50, 30),
-             'learning_rate': np.geomspace(0.001, 0.1, 30),
-             'batch_size': [20, 50, 100, 200, 300]},
-            cv=KFold(5), verbose=3, n_jobs=2
+            LinearRegressionSGD(random_state=args.seed),
+            {'alpha': [0, 0.001, 0.005, 0.01, 0.1, 1],
+             'epochs': [100, 200],
+             'learning_rate': [0.001, 0.003, 0.005, 0.007, 0.01, 0.05],
+             'batch_size': [10, 20, 50, 100, 300]},
+            cv=KFold(5), verbose=3, n_jobs=8
         )
         trainer.fit(feature_processing.fit_transform(train_data), train_target)
         model = Pipeline([("FP", feature_processing), ("LR", trainer)])
+        with lzma.open(args.model_path, "wb") as model_file:
+            pickle.dump(model, model_file)
+        with lzma.open("grid_cv.object", "wb") as grid_file:
+            pickle.dump(trainer, grid_file)
         train_rmse = mean_squared_error(model.predict(train_data), train_target, squared=False)
         print(train_rmse)
-        dev_rmse = mean_squared_error(model.predict(dev_data), dev_target, squared=False)
-        print(dev_rmse)
-        for epoch in range(args.epochs):
-            wandb.log({"train_rmse": train_rmse})
-            wandb.log({"dev_rmse": dev_rmse})
-        with lzma.open(args.model_path + "GR", "wb") as model_file:
-            pickle.dump(model, model_file)
-        with lzma.open("trainer", "wb") as trainer_file:
-            pickle.dump(trainer, trainer_file)
+        if args.dev_size != 0:
+            dev_rmse = mean_squared_error(model.predict(dev_data), dev_target, squared=False)
+            print(dev_rmse)
+        print(trainer.best_score_, trainer.best_params_)
+
     elif args.predict == "ridgeCV":
-        wandb.init(project="npfl129", name="SGD_REGRESSOR")
         np.random.seed(args.seed)
         dataset = Dataset()
 
@@ -122,12 +123,7 @@ def main(args):
         ]) for alpha in alphas]
         models = map(lambda m: m.fit(train_data, train_target), pipelines)
         losses = map(lambda model: mean_squared_error(model.predict(dev_data), dev_target, squared=False), models)
-        # wandb.log({"Alphas SGD": wandb.plot.line(
-        #     wandb.Table(data=[[x, y] for x, y in zip(alphas, losses)], columns=["x", "y"]), "x", "y")})
-        for alpha, loss in zip(alphas, losses):
-            wandb.log({"Loss": loss, "Alpha": alpha})
     elif args.predict == "ridge":
-        wandb.init(project="npfl129", name="RIDGE BASELINE")
         np.random.seed(args.seed)
         dataset = Dataset()
 
@@ -146,11 +142,7 @@ def main(args):
         ])
         model = pipeline.fit(train_data, train_target)
         loss = mean_squared_error(model.predict(dev_data), dev_target, squared=False)
-        for epoch in range(args.epochs):
-            wandb.log({"dev_rmse": loss})
     elif args.predict is None:
-        wandb.init(project="npfl129", name="init_rental_alpha_competition")
-        wandb.config.update(args)
         dataset = Dataset()
         np.random.seed(args.seed)
 
@@ -174,28 +166,19 @@ def main(args):
         for _ in range(args.epochs):
             permutation = generator.permutation(train_data.shape[0])
 
-            for i in range(int(np.ceil(train_data.shape[0] / args.batch_size))):
+            for i in range(train_data.shape[0] // args.batch_size):
                 batch_data = train_data[permutation[i * args.batch_size:(i + 1) * args.batch_size]]
                 batch_target = train_target[permutation[i * args.batch_size:(i + 1) * args.batch_size]]
                 batch_prediction = batch_data @ weights
-                gradient = (batch_data.T @ (batch_prediction - batch_target) + args.alpha * weights) \
-                           / batch_data.shape[0]
+                gradient = (batch_data.T @ batch_prediction + args.alpha * weights - batch_data.T @ batch_target) \
+                           / args.batch_size
                 weights = weights - args.learning_rate * gradient
 
             train_rmse = mean_squared_error(train_data @ weights, train_target, squared=False)
             dev_rmse = mean_squared_error(dev_data @ weights, dev_target, squared=False)
-            wandb.log({"train_rmse": train_rmse, "dev_rmse": dev_rmse})
             train_rmses.append(train_rmse)
             dev_rmses.append(dev_rmse)
 
-        l = LinearRegression().fit(train_data, train_target)
-        l.coef_ = weights
-        model = Pipeline([
-            ("Feature Preprocessing", ct),
-            ("Polynomial Features 3rd degree", pf),
-            ("Lin", l)
-        ])
-        print(mean_squared_error(model.predict(dev_data), dev_target, squared=False))
         # Serialize the model.
         # with lzma.open(args.model_path, "wb") as model_file:
         #     pickle.dump(best_model, model_file + "ridge_alpha10")
@@ -208,7 +191,6 @@ def main(args):
         with lzma.open(args.model_path, "rb") as model_file:
             model = pickle.load(model_file)
 
-        # TODO: Generate `predictions` with the test set predictions.
         predictions = model.predict(dataset.data)
 
         return predictions
@@ -217,3 +199,4 @@ def main(args):
 if __name__ == "__main__":
     args = parser.parse_args([] if "__file__" not in globals() else None)
     main(args)
+
