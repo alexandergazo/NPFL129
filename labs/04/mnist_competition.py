@@ -40,7 +40,7 @@ parser.add_argument("--predict", default=None, type=str, help="Run prediction on
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
 parser.add_argument("--seed", default=42, type=int, help="Random seed")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--model_path", default="mnist_competition.model", type=str, help="Model path")
+parser.add_argument("--model_path", default="mnist_competition200.model", type=str, help="Model path")
 
 
 def get_shift(size, sigma, alpha):
@@ -51,6 +51,9 @@ def get_shift(size, sigma, alpha):
 
 
 def transform_instance(img, predict, sigma=6, alpha=38, beta=15, gamma=20, cval=-1):
+    """
+    Based on section 4 of https://arxiv.org/pdf/1003.0358.pdf
+    """
     shift_x = get_shift((28, 28), sigma, alpha) + np.asarray([[i] * 28 for i in range(28)])
     shift_y = get_shift((28, 28), sigma, alpha) + np.asarray([[i] * 28 for i in range(28)]).T
     new_img = map_coordinates(img.reshape(28, 28), (shift_x, shift_y), order=2, cval=cval)
@@ -65,38 +68,50 @@ def transform_instance(img, predict, sigma=6, alpha=38, beta=15, gamma=20, cval=
     return new_img.flatten()
 
 
+def transform_set(data, target):
+    result = np.empty(data.shape)
+    for i, instance in enumerate(data):
+        result[i,:] = transform_instance(instance, target[i])
+    return result
+
+
+def generate_sets(data, target, n, first_unmodified=True):
+    if first_unmodified:
+        n -= 1
+        yield data, target
+    for _ in range(n):
+        yield transform_set(data, target), target
+
+
 def main(args):
     if args.predict is None:
-        from tqdm import tqdm
         np.random.seed(args.seed)
-        train = Dataset()
 
+        train = Dataset()
         train.data = train.data / 255 * 2 - 1
         train_data, test_data, train_target, test_target = train_test_split(
             train.data, train.target, stratify=train.target, test_size=0.1, random_state=args.seed)
-        iters = 20
-        train_data_expanded = np.empty((train_data.shape[0] * iters, train_data.shape[1]))
-        train_target_expanded = np.empty((train_target.shape[0] * iters,))
-        for idx, instance in enumerate(tqdm(train_data)):
-            for i in range(iters):
-                train_data_expanded[idx * iters + i, :] = transform_instance(instance, train_target[idx])
-                train_target_expanded[idx * iters + i] = train_target[idx]
-        np.save("train_data_expanded", train_data_expanded)
-        np.save("train_target_expanded", train_target_expanded)
 
-        mlp = MLPClassifier((1000, 500), random_state=args.seed, verbose=10)
-        # mlp = MLPClassifier((1000, 500), random_state=args.seed, verbose=10, learning_rate_init=0.1, solver='sgd',
-        #                     activation='tanh', learning_rate='adaptive', momentum=0, max_iter=iters)
-        mlp.fit(train_data_expanded, train_target_expanded)
-        print(accuracy_score(test_target, mlp.predict(test_data)))
+        mlp = MLPClassifier((1000, 500), random_state=args.seed, verbose=11, learning_rate_init=0.1, solver='sgd',
+                            activation='tanh', learning_rate='adaptive', momentum=0)
+        mlp.best_loss_ = np.inf
+        mlp.batch_size = int(train_data.shape[0] * 0.01)
+
+        try:
+            for data, target in generate_sets(train_data, train_target, 200):
+                mlp.partial_fit(data, target, classes=np.arange(10))
+                print("Validation set accuracy: %.6f" % accuracy_score(test_target, mlp.predict(test_data)))
+        except KeyboardInterrupt:
+            print("Training interrupted. Achieved validation set accuracy: %.6f" % accuracy_score(test_target, mlp.predict(test_data)))
 
         # Serialize the model.
-        with lzma.open(args.model_path, "wb") as model_file:
+        print("Saving model as " + args.model_path)
+        with lzma.open(args.model_path + "test", "wb") as model_file:
             pickle.dump(mlp, model_file)
 
     else:
-        # Use the model and return test set predictions, as either a Python list or a NumPy array.
         test = Dataset(args.predict)
+        test.data = test.data / 255 * 2 - 1
 
         with lzma.open(args.model_path, "rb") as model_file:
             model = pickle.load(model_file)
