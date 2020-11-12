@@ -35,7 +35,7 @@ def main(args):
     def predict(X):
         predictions = np.empty((X.shape[0], 1))
         for i, row in enumerate(X):
-            predictions[i] = sum(beta * kernel(row, dictum) for beta, dictum in zip(betas, train_data))
+            predictions[i] = sum(beta * kernel(row, dictum) for beta, dictum in zip(betas, train_data)) + bias
         return predictions
 
     # Create a random generator with a given seed
@@ -49,6 +49,7 @@ def main(args):
     test_target = np.sin(5 * test_data) + 1
 
     betas = np.zeros(args.data_size)
+    bias = train_target.mean()
 
     train_rmses, test_rmses = [], []
     for iteration in range(args.iterations):
@@ -56,8 +57,9 @@ def main(args):
 
         for i in range(train_data.shape[0] // args.batch_size):
             batch_indices = permutation[i * args.batch_size:(i + 1) * args.batch_size]
-            betas[batch_indices] = betas[batch_indices] + args.learning_rate / len(batch_indices) * (
-                        train_target[batch_indices] - predict(train_data[batch_indices]).flatten())
+            betas[batch_indices] += args.learning_rate / len(batch_indices) * (
+                train_target[batch_indices] - predict(train_data[batch_indices]).flatten() \
+                - args.l2 * betas[batch_indices])
 
         train_rmses.append(mean_squared_error(train_target, predict(train_data), squared=False))
         test_rmses.append(mean_squared_error(test_target, predict(test_data), squared=False))
