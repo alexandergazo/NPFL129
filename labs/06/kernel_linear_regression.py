@@ -56,10 +56,12 @@ def main(args):
         permutation = generator.permutation(train_data.shape[0])
 
         for i in range(train_data.shape[0] // args.batch_size):
-            batch_indices = permutation[i * args.batch_size:(i + 1) * args.batch_size]
-            betas[batch_indices] += args.learning_rate / len(batch_indices) * (
-                train_target[batch_indices] - predict(train_data[batch_indices]).flatten() \
-                - args.l2 * betas[batch_indices])
+            batch_indices = np.zeros(train_data.shape[0], dtype=bool)
+            batch_indices[permutation[i * args.batch_size:(i + 1) * args.batch_size]] = True
+            betas[batch_indices] += args.learning_rate / batch_indices.sum() * (
+                train_target[batch_indices] - predict(train_data[batch_indices]).flatten()) \
+                - args.learning_rate * args.l2 * betas[batch_indices]
+            betas[~batch_indices] -= args.learning_rate * args.l2 * betas[~batch_indices]
 
         train_rmses.append(mean_squared_error(train_target, predict(train_data), squared=False))
         test_rmses.append(mean_squared_error(test_target, predict(test_data), squared=False))
