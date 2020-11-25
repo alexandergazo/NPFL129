@@ -3,7 +3,7 @@ import argparse
 
 import numpy as np
 import sklearn.datasets
-import sklearn.metrics
+from sklearn.metrics import accuracy_score
 import sklearn.model_selection
 
 parser = argparse.ArgumentParser()
@@ -23,14 +23,31 @@ parser.add_argument("--tolerance", default=1e-4, type=float, help="Default toler
 # If you add more arguments, ReCodEx will keep them with your default values.
 
 def kernel(args, x, y):
-    # TODO: As in `kernel_linear_regression`, We consider the following `args.kernel`s:
-    # - "poly": K(x, y; degree, gamma) = (gamma * x^T y + 1) ^ degree
-    # - "rbf": K(x, y; gamma) = exp^{- gamma * ||x - y||^2}
-    raise NotImplementedError()
+    if args.kernel == 'rbf':
+        return np.exp(-args.kernel_gamma * np.linalg.norm(x - y) ** 2)
+    elif args.kernel == 'poly':
+        d, r = args.kernel_gamma * np.dot(x, y) + 1, 1
+        for _ in range(args.kernel_degree): r *= d
+        return r
+
 
 # We implement the SMO algorithm as a separate method, so we can use
 # it in the svm_multiclass assignment too.
-def smo(args, train_data, train_target, test_data, test_target):
+def smo(args, K, train_data, train_target, test_data=None, test_target=None):
+    def predict(X):
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        y = np.empty(X.shape[0])
+        for i, row in enumerate(X):
+            y[i] = sum(target * beta * kernel(args, row, dictum) for beta, dictum, target in zip(a, train_data, train_target))
+        return y + b
+    def predict_train_data(X):
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        y = np.empty(X.shape[0])
+        for i, row in enumerate(X):
+            y[i] = sum(target * beta * K[i, j] for beta, j, target in zip(a, range(train_data.shape[0]), train_target))
+        return y + b
     # Create initial weights
     a, b = np.zeros(len(train_data)), 0
     generator = np.random.RandomState(args.seed)
@@ -44,32 +61,47 @@ def smo(args, train_data, train_target, test_data, test_target):
             # We want j != i, so we "skip" over the value of i
             j = j + (j >= i)
 
-            # TODO: Check that a[i] fulfils the KKT conditions, using `args.tolerance` during comparisons.
+            Ei = predict_train_data(train_data[i])[0] - train_target[i]
+            KKT = (a[i] >= args.C - args.tolerance or train_target[i] * Ei >= -args.tolerance) \
+                and (a[i] <= args.tolerance or train_target[i] * Ei <= args.tolerance)
+            if not KKT:
+                second_derivative_aj = 2 * K[i, j] - K[i, i] - K[j, j]
+                if second_derivative_aj > -args.tolerance:
+                    continue
+                Ej = predict_train_data(train_data[j])[0] - train_target[j]
+                aj_new = a[j] - train_target[j] * (Ei - Ej) / second_derivative_aj
+                equal_targets = train_target[i] == train_target[j]
+                L = max(0, a[j] - (args.C - a[i] if equal_targets else a[i]))
+                H = min(args.C, a[j] + (a[i] if equal_targets else args.C - a[i]))
+                aj_new = np.clip(aj_new, L, H)
 
-            # If the conditions do not hold, then
-            # - compute the updated unclipped a_j^new.
-            #
-            #   If the second derivative of the loss with respect to a[j]
-            #   is > -`args.tolerance`, do not update a[j] and continue
-            #   with next i.
+                if abs(aj_new - a[j]) < args.tolerance:
+                    continue
 
-            # - clip the a_j^new to suitable [L, H].
-            #
-            #   If the clipped updated a_j^new differs from the original a[j]
-            #   by less than `args.tolerance`, do not update a[j] and continue
-            #   with next i.
+                ai_new = a[i] - train_target[i] * train_target[j] * (aj_new - a[j])
 
-            # - update a[j] to a_j^new, and compute the updated a[i] and b.
-            #
-            #   During the update of b, compare the a[i] and a[j] to zero by
-            #   `> args.tolerance` and to C using `< args.C - args.tolerance`.
+                bi = b - Ei - train_target[i] * (ai_new - a[i]) * K[i, i] \
+                        - train_target[j] * (aj_new - a[j]) * K[j, i]
 
-            # - increase `as_changed`
+                bj = b - Ej - train_target[i] * (ai_new - a[i]) * K[i, j] \
+                        - train_target[j] * (aj_new - a[j]) * K[j, j]
 
-        # TODO: After each iteration, measure the accuracy for both the
-        # train set and the test set and append it to `train_accs` and `test_accs`.
-        train_accs.append(None)
-        test_accs.append(None)
+                if args.tolerance < ai_new < args.C - args.tolerance:
+                    b = bi
+                elif args.tolerance < aj_new < args.C - args.tolerance:
+                    b = bj
+                else:
+                    b = (bi + bj) / 2
+                a[i] = ai_new
+                a[j] = aj_new
+
+                as_changed = True
+
+        train_acc = accuracy_score((train_target + 1) / 2, predict_train_data(train_data) > 0)
+        train_accs.append(train_acc)
+        if test_data is not None:
+            test_acc = accuracy_score((test_target + 1) / 2, predict(test_data) > 0)
+            test_accs.append(test_acc)
 
         # Stop training if max_passes_without_as_changing passes were reached
         passes_without_as_changing = 0 if as_changed else passes_without_as_changing + 1
@@ -77,17 +109,23 @@ def smo(args, train_data, train_target, test_data, test_target):
             break
 
         if len(train_accs) % 100 == 0 and len(train_accs) < args.max_iterations:
-            print("Iteration {}, train acc {:.1f}%, test acc {:.1f}%".format(
-                len(train_accs), 100 * train_accs[-1], 100 * test_accs[-1]))
+            print("Iteration {}, train acc {:.1f}%".format(
+                len(train_accs), 100 * train_accs[-1]), end='')
+            if test_data is not None:
+                print(", test acc {:.1f}%".format(100 * test_accs[-1]), end='')
+            print()
 
-    print("Training finished after iteration {}, train acc {:.1f}%, test acc {:.1f}%".format(
-        len(train_accs), 100 * train_accs[-1], 100 * test_accs[-1]))
+    print("Training finished after iteration {}, train acc {:.1f}%".format(
+        len(train_accs), 100 * train_accs[-1]), end='')
+    if test_data is not None:
+        print(", test acc {:.1f}%".format(100 * test_accs[-1]), end='')
+    print()
 
-    # TODO: Create an array of support vectors (in the same order in which they appeared
-    # in the training data; to avoid rounding errors, consider a training example
-    # a support vector only if a_i > `args.tolerance`) and their weights (a_i * t_i).
-    # Note that until now the full `a` should have been for prediction.
-    support_vectors, support_vector_weights = None, None
+    support_vectors, support_vector_weights = [], []
+    for a, vector, target in zip(a, train_data, train_target):
+        if a > args.tolerance:
+            support_vectors.append(vector)
+            support_vector_weights.append(a * target)
 
     return support_vectors, support_vector_weights, b, train_accs, test_accs
 
@@ -102,8 +140,13 @@ def main(args):
         data, target, test_size=args.test_size, random_state=args.seed)
 
     # Run the SMO algorithm
+    print("Caching kernel...", end="")
+    K = np.asarray([[kernel(args, train_data[i], train_data[j])
+                     for i in range(train_data.shape[0])]
+                    for j in range(train_data.shape[0])])
+    print("Done.")
     support_vectors, support_vector_weights, bias, train_accs, test_accs = smo(
-        args, train_data, train_target, test_data, test_target)
+        args, K, train_data, train_target, test_data, test_target)
 
     if args.plot:
         import matplotlib.pyplot as plt
@@ -116,14 +159,12 @@ def main(args):
             plt.contourf(xs, ys, predictions, levels=0, cmap=plt.cm.RdBu)
             plt.contour(xs, ys, predictions, levels=[-1, 0, 1], colors="k", zorder=1)
             plt.scatter(train_data[:, 0], train_data[:, 1], c=train_target, marker="o", label="Train", cmap=plt.cm.RdBu, zorder=2)
-            plt.scatter(support_vectors[:, 0], support_vectors[:, 1], marker="o", s=90, label="Support Vectors", c="#00dd00")
+            plt.scatter(support_vectors[:][0], support_vectors[:][1], marker="o", s=90, label="Support Vectors", c="#00dd00")
             plt.scatter(test_data[:, 0], test_data[:, 1], c=test_target, marker="*", label="Test", cmap=plt.cm.RdBu, zorder=2)
             plt.scatter(test_data[test_mismatch, 0], test_data[test_mismatch, 1], marker="*", s=130, label="Test Errors", c="#ffff00")
             plt.legend(loc="upper center", ncol=4)
 
-        # If you want plotting to work (not required for ReCodEx), you need to
-        # define `predict_function` computing SVM value `y(x)` for the given x.
-        predict_function = lambda x: None
+        predict_function = lambda x: sum(weight * kernel(args, vector, x) for vector, weight in zip(support_vectors, support_vector_weights)) + bias
 
         plot(predict_function, support_vectors)
         if args.plot is True: plt.show()

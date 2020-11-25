@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+from collections import namedtuple
 
 import numpy as np
 import sklearn.datasets
-import sklearn.metrics
 import sklearn.model_selection
+from smo_algorithm import smo, kernel
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
@@ -21,14 +22,6 @@ parser.add_argument("--test_size", default=0.5, type=lambda x:int(x) if x.isdigi
 parser.add_argument("--tolerance", default=1e-4, type=float, help="Default tolerance for KKT conditions")
 # If you add more arguments, ReCodEx will keep them with your default values.
 
-def kernel(args, x, y):
-    # TODO: Use the kernel from the smo_algorithm assignment.
-    raise NotImplementedError()
-
-def smo(args, train_data, train_target, test_data, test_target):
-    # TODO: Use the SMO algorithm from the smo_algorithm assignment.
-    raise NotImplementedError()
-
 def main(args):
     # Use the digits dataset.
     data, target = sklearn.datasets.load_digits(n_class=args.classes, return_X_y=True)
@@ -38,23 +31,36 @@ def main(args):
     train_data, test_data, train_target, test_target = sklearn.model_selection.train_test_split(
         data, target, test_size=args.test_size, random_state=args.seed)
 
-    # TODO: Using One-vs-One scheme, train (K \binom 2) classifiers, one for every
-    # pair of classes $i < j$, using the `smo` method.
-    #
-    # When training a classifier for classes $i < j$:
-    # - keep only the training data of these classes, in the same order
-    #   as in the input dataset;
-    # - use targets 1 for the class $i$ and -1 for the class $j$.
-
-    # TODO: Classify the test set by majority voting of all the trained classifiers,
-    # using the lowest class index in the case of ties.
-    #
-    # Note that during prediction, only the support vectors returned by the `smo`
-    # should be used, not all training data.
-    #
-    # Finally, compute the test set prediction accuracy.
-    test_accuracy = None
-
+    SVM = namedtuple('SVM', 'support_vectors, support_vector_weights, bias, class_list')
+    def predict(svm, x):
+        return svm.class_list[
+            sum(w * kernel(args, x, v) for w, v in zip(svm.support_vector_weights, svm.support_vectors))
+            + svm.bias > 0]
+    svms = []
+    for i in range(args.classes - 1):
+        for j in range(i + 1, args.classes):
+            i_indices = train_target == i
+            j_indices = train_target == j
+            target = np.zeros_like(train_target)
+            target[i_indices] = 1
+            target[j_indices] = -1
+            i_test_indices = test_target == i
+            j_test_indices = test_target == j
+            t_target = np.zeros_like(test_target)
+            t_target[i_test_indices] = 1
+            t_target[j_test_indices] = -1
+            print(f'Training classes {i} and {j}.')
+            svm = SVM(
+                *smo(args, train_data[i_indices | j_indices], target[i_indices | j_indices], test_data[i_test_indices | j_test_indices], t_target[i_test_indices | j_test_indices])[:3],
+                [j, i])
+            svms.append(svm)
+    test_accuracy = 0
+    for dictum, target in zip(test_data, test_target):
+        classes = np.zeros(args.classes)
+        for svm in svms:
+            classes[predict(svm, dictum)] += 1
+        test_accuracy += classes.argmax() == target
+    test_accuracy /= test_target.shape[0]
     return test_accuracy
 
 if __name__ == "__main__":
