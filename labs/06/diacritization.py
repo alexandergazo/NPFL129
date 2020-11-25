@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from diacritization_dictionary import Dictionary
+from diacritization_eval import accuracy
 from collections import defaultdict
 from sklearn.pipeline import make_pipeline
 from tqdm import tqdm
@@ -13,7 +13,7 @@ import sys
 
 import numpy as np
 from sklearn.neural_network import MLPClassifier, MLPRegressor
-from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import OneHotEncoder
 from itertools import islice
 
@@ -49,30 +49,29 @@ class Dataset:
 
 
 class Dummy():
-    def __init__(self, window_size):
+    def __init__(self, window_size, ngram):
         self.window_size = window_size
+        self.ngram = ngram
 
     def fit(self, X, y):
         pass
 
     def transform(self, X):
-        X = np.vstack([
-                np.zeros((self.window_size // 2, X.shape[1])),
-                X,
-                np.zeros((self.window_size // 2, X.shape[1]))])
-        X_out = np.empty((X.shape[0] - self.window_size + 1, X.shape[1] * self.window_size))
+        X = [''] * (self.window_size // 2) + X + [''] * (self.window_size // 2)
+        X_out = np.empty((len(X) - self.window_size + 1,
+                          self.window_size + (self.window_size - self.ngram + 1)),
+                         dtype=f'<U{self.ngram}')
         for i, window in enumerate(iter_window(X, self.window_size)):
-            X_out[i] = np.concatenate(window)
-        X_out = sparse.csr_matrix(X_out)
+            X_out[i] = list(window) + [''.join(i) for i in iter_window(window, self.ngram)]
         return X_out
 
 
-def generate_windowed_data(data, target, window_size=5):
-    data_size = data.shape[0] - window_size + 1
-    X = np.empty((data_size, window_size))
-    y = np.empty((data_size, target.shape[1]))
+def generate_data(data, target, window_size, ngram):
+    data_size = len(data) - window_size + 1
+    X = np.empty((data_size, window_size + (window_size - ngram + 1)), dtype=f'<U{ngram}')
+    y = np.empty(data_size)
     for i, window in tqdm(enumerate(iter_window(data, window_size)), total=data_size):
-        X[i] = window
+        X[i] = list(window) + [''.join(i) for i in iter_window(window, ngram)]
         y[i] = target[i + window_size // 2]
     return X, y
 
@@ -83,101 +82,104 @@ parser.add_argument("--predict", default=None, type=str, help="Run prediction on
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
 parser.add_argument("--seed", default=42, type=int, help="Random seed")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--model_path", default="diacritization.model", type=str, help="Model path")
+parser.add_argument("--model_path", default="lastlast.model", type=str, help="Model path")
 parser.add_argument("--window_size", default=9, type=int, help="Default window size (odd).")
+parser.add_argument("--train", default=None, type=str, help="Train on given data")
+parser.add_argument("--ngram", default=5, type=int, help="Default window size (odd).")
 
-def index(iterable, item):
-    for idx, i in enumerate(iterable):
-        if item == i:
-            return idx
-    return -1
+
+def mark(letter):
+    if letter in 'áéíúóý':
+        return 1
+    elif letter in 'čďěňřšťž':
+        return 2
+    elif letter == 'ů':
+        return 3
+    else:
+        return 0
+
+def demark(letter, mark):
+    if mark == 0:
+        return letter
+    if mark == 1 and letter in 'aeiuoy':
+        return 'áéíúóý'['aeiuoy'.index(letter)]
+    if mark == 2 and letter in 'cdenrstz':
+        return 'čďěňřšťž'['cdenrstz'.index(letter)]
+    if mark == 3 and letter == 'u':
+        return 'ů'
+    return letter
+
 
 def main(args):
-    if args.predict is None:
+    if args.train is not None:
         # We are training a model.
         np.random.seed(args.seed)
-        variants = Dictionary().variants
-        variants[','] = [',']
-        variants['.'] = ['.']
-        variants['"'] = ['"']
-        variants['-'] = ['-']
 
-        classes, label = {}, 0
-        with open("fiction-dictionary.txt", "r") as fdt:
-            words = ''.join(fdt.readlines()).replace('\n',' ').split()
-        for word in words:
-            if word not in classes:
-                classes[word] = label
-                label += 1
+        train = Dataset(args.train)
+        data = list(train.data.lower())
+        target = list(train.target.lower())
+        target = [mark(letter.lower()) for letter in target]
+        X, y = generate_data(data, target, args.window_size, args.ngram)
+        o = OneHotEncoder(handle_unknown='ignore')
+        X = o.fit_transform(X)
 
-        train = Dataset()
-        target = train.target.lower().split()
-        data = train.data.lower().split()
-        target = [variants[d].index(t) if d in variants and t in variants[d] else 'unkn' for d, t in zip(data, target)]
-        ot = OneHotEncoder(dtype=np.bool_, handle_unknown='ignore', sparse=False)
-        target = ot.fit_transform(np.reshape(target, (-1, 1)))
-
-        data_labels = np.empty_like(data, dtype=int)
-        for idx, word in enumerate(data):
-            if word not in classes:
-                classes[word] = label
-                label += 1
-            data_labels[idx] = classes[word]
-
-        X, y = generate_windowed_data(data_labels, target, args.window_size)
-        X = OneHotEncoder().fit_transform(X)
-        # np.savez_compressed("X.npz", X)
-        # np.savez_compressed("y.npz", y)
-
-        print("Training started.")
-        lr = LinearRegression().fit(X, y)
-        # model = make_pipeline(o, Dummy(args.window_size), mlp, verbose=11)
-        model = lr
+        print("Training started.", X.shape)
+        lr = LogisticRegression(class_weight='balanced', C=1000, verbose=1, n_jobs=1, max_iter=10000).fit(X, y)
+        model = make_pipeline(Dummy(args.window_size, args.ngram), o, lr, verbose=11)
 
         # Serialize the model.
         with lzma.open(args.model_path, "wb") as model_file:
             pickle.dump(model, model_file)
-    else:
+
+    if args.predict is not None:
         friends = defaultdict(list)
         friends.update({'a': ['á'], 'c': ['č'], 'd': ['ď'], 'e': ['é', 'ě'], 'i': ['í'], 'n': ['ň'], 'o': ['ó'], 'r': ['ř'], 's': ['š'], 't': ['ť'], 'u': ['ú', 'ů'], 'y': ['ý'], 'z': ['ž']})
 
         test = Dataset(args.predict)
-        X_whole = np.reshape(list(test.data.lower()), (-1, 1))
+        X_whole = list(test.data.lower())
 
-        with lzma.open("diacritization.model", "rb") as model_file:
+        with lzma.open(args.model_path, "rb") as model_file:
             model = pickle.load(model_file)
-        # mlp = model.named_steps['mlpclassifier']
-        # for i in range(len(mlp.coefs_)):
-        #     mlp.coefs_[i] = mlp.coefs_[i].astype(np.float16)
-        # for i in range(len(mlp.intercepts_)):
-        #     mlp.intercepts_[i] = mlp.intercepts_[i].astype(np.float16)
-        # model = make_pipeline(model.named_steps['onehotencoder'], Dummy(args.window_size), mlp)
-        # with lzma.open(args.model_path, "wb") as model_file:
-        #     pickle.dump(model, model_file)
-        # return
 
+        from diacritization_dictionary import Dictionary
+        from itertools import chain
+        variants = Dictionary().variants
         predictions = []
         batch_size = 5000
-        for i in range(X_whole.shape[0] // batch_size + 1):
+        word = ""
+        for i in range(len(X_whole) // batch_size + 1):
             X = X_whole[i * batch_size : (i + 1) * batch_size]
             original = test.data[i * batch_size : (i + 1) * batch_size]
             y = model.predict(X)
-            y = model.named_steps['onehotencoder'].inverse_transform(y)
+            y = np.reshape([demark(l, m) for l, m in zip(X, y)], (-1, 1))
 
             for predicted, orig in zip(y.flatten(), original):
+                if orig == ' ':
+                    nodia = word.translate(test.DIA_TO_NODIA)
+                    if nodia not in variants:
+                        val = word
+                    else:
+                        v = variants[nodia]
+                        w = np.asarray(list(map(list, v)))
+                        idx = (w != np.asarray(list(word))).sum(axis=1).argmin()
+                        val = v[idx]
+                    predictions.append(val)
+                    word = ""
+                    continue
                 if predicted not in friends[orig.lower()]:
-                    predictions.append(orig)
+                    word += orig
                 else:
                     if orig.isupper():
-                        predictions.append(predicted.upper())
+                        word += predicted.upper()
                     else:
-                        predictions.append(predicted)
+                        word += predicted
+        predictions.append(word)
 
-        predictions = ''.join(predictions)
+        predictions = ' '.join(predictions)
+        print(predictions)
+        if test.target:
+            print(f"The accuracy on validation set: {accuracy(test.target, predictions)}")
         return predictions
-        # for dictum, target, _  in zip(X, y, range(20)):
-            # print(''.join(o.inverse_transform(np.reshape(dictum, (21, -1))).flatten().tolist()))
-            # print(o.inverse_transform(np.reshape(target, (1, -1))))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,17 @@ class Dictionary:
 
         # Load the dictionary to `variants`
         self.variants = {}
+        self.variants[','] = [',']
+        self.variants['.'] = ['.']
+        self.variants['"'] = ['"']
+        self.variants['-'] = ['-']
+        self.variants['?'] = ['?']
+        self.variants['!'] = ['!']
+        self.variants[':'] = [':']
+        self.variants["'"] = ["'"]
+        self.variants['('] = ['(']
+        self.variants[')'] = [')']
+        self.variants[';'] = [';']
         with open(name, "r", encoding="utf-8") as dictionary_file:
             for line in dictionary_file:
                 nodia_word, *variants = line.rstrip("\n").split()
