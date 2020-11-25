@@ -69,12 +69,11 @@ class Dummy():
 
 def generate_windowed_data(data, target, window_size=5):
     data_size = data.shape[0] - window_size + 1
-    X = np.empty((data_size, data.shape[1] * window_size))
+    X = np.empty((data_size, window_size))
     y = np.empty((data_size, target.shape[1]))
     for i, window in tqdm(enumerate(iter_window(data, window_size)), total=data_size):
-        X[i] = np.concatenate(window)
+        X[i] = window
         y[i] = target[i + window_size // 2]
-    X = sparse.csr_matrix(X)
     return X, y
 
 
@@ -87,6 +86,11 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed")
 parser.add_argument("--model_path", default="diacritization.model", type=str, help="Model path")
 parser.add_argument("--window_size", default=9, type=int, help="Default window size (odd).")
 
+def index(iterable, item):
+    for idx, i in enumerate(iterable):
+        if item == i:
+            return idx
+    return -1
 
 def main(args):
     if args.predict is None:
@@ -98,30 +102,41 @@ def main(args):
         variants['"'] = ['"']
         variants['-'] = ['-']
 
+        classes, label = {}, 0
         with open("fiction-dictionary.txt", "r") as fdt:
             words = ''.join(fdt.readlines()).replace('\n',' ').split()
-        o = OneHotEncoder(dtype=np.bool_, handle_unknown='ignore', sparse=False)
-        o.fit(np.reshape(words, (-1, 1)))
+        for word in words:
+            if word not in classes:
+                classes[word] = label
+                label += 1
 
         train = Dataset()
         target = train.target.lower().split()
         data = train.data.lower().split()
         target = [variants[d].index(t) if d in variants and t in variants[d] else 'unkn' for d, t in zip(data, target)]
-        data = o.transform(np.reshape(data, (-1, 1)))
         ot = OneHotEncoder(dtype=np.bool_, handle_unknown='ignore', sparse=False)
         target = ot.fit_transform(np.reshape(target, (-1, 1)))
-        X, y = generate_windowed_data(data, target, args.window_size)
-        sparse.save_npz("X.npz", X)
-        numpy.savez_compressed("y.npz", y)
 
-        print("Training started.", X.shape)
+        data_labels = np.empty_like(data, dtype=int)
+        for idx, word in enumerate(data):
+            if word not in classes:
+                classes[word] = label
+                label += 1
+            data_labels[idx] = classes[word]
+
+        X, y = generate_windowed_data(data_labels, target, args.window_size)
+        X = OneHotEncoder().fit_transform(X)
+        # np.savez_compressed("X.npz", X)
+        # np.savez_compressed("y.npz", y)
+
+        print("Training started.")
         lr = LinearRegression().fit(X, y)
-        model = make_pipeline(o, Dummy(args.window_size), mlp, verbose=11)
+        # model = make_pipeline(o, Dummy(args.window_size), mlp, verbose=11)
+        model = lr
 
         # Serialize the model.
         with lzma.open(args.model_path, "wb") as model_file:
             pickle.dump(model, model_file)
-
     else:
         friends = defaultdict(list)
         friends.update({'a': ['á'], 'c': ['č'], 'd': ['ď'], 'e': ['é', 'ě'], 'i': ['í'], 'n': ['ň'], 'o': ['ó'], 'r': ['ř'], 's': ['š'], 't': ['ť'], 'u': ['ú', 'ů'], 'y': ['ý'], 'z': ['ž']})
