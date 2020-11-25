@@ -32,11 +32,12 @@ def main(args):
         data, target, test_size=args.test_size, random_state=args.seed)
 
     SVM = namedtuple('SVM', 'support_vectors, support_vector_weights, bias, class_list')
-    def predict(svm, x):
-        return svm.class_list[
-            sum(w * kernel(args, x, v) for w, v in zip(svm.support_vector_weights, svm.support_vectors))
-            + svm.bias > 0]
     svms = []
+    print("Caching kernel...", end="")
+    K = np.asarray([[kernel(args, train_data[i], train_data[j])
+                     for i in range(train_data.shape[0])]
+                    for j in range(train_data.shape[0])])
+    print("Done.")
     for i in range(args.classes - 1):
         for j in range(i + 1, args.classes):
             i_indices = train_target == i
@@ -51,9 +52,19 @@ def main(args):
             t_target[j_test_indices] = -1
             print(f'Training classes {i} and {j}.')
             svm = SVM(
-                *smo(args, train_data[i_indices | j_indices], target[i_indices | j_indices], test_data[i_test_indices | j_test_indices], t_target[i_test_indices | j_test_indices])[:3],
+                *smo(args,
+                     K[i_indices | j_indices, :][:, i_indices | j_indices],
+                     train_data[i_indices | j_indices],
+                     target[i_indices | j_indices],
+                     test_data[i_test_indices | j_test_indices],
+                     t_target[i_test_indices | j_test_indices]
+                     )[:3],
                 [j, i])
             svms.append(svm)
+
+    def predict(svm, x):
+        return svm.class_list[
+            sum(w * kernel(args, x, v) for w, v in zip(svm.support_vector_weights, svm.support_vectors)) + svm.bias > 0]
     test_accuracy = 0
     for dictum, target in zip(test_data, test_target):
         classes = np.zeros(args.classes)
@@ -62,6 +73,7 @@ def main(args):
         test_accuracy += classes.argmax() == target
     test_accuracy /= test_target.shape[0]
     return test_accuracy
+
 
 if __name__ == "__main__":
     args = parser.parse_args([] if "__file__" not in globals() else None)

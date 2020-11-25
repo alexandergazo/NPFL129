@@ -22,6 +22,7 @@ parser.add_argument("--test_size", default=0.5, type=lambda x:int(x) if x.isdigi
 parser.add_argument("--tolerance", default=1e-4, type=float, help="Default tolerance for KKT conditions")
 # If you add more arguments, ReCodEx will keep them with your default values.
 
+# TODO if this was vectorized it would be great
 def kernel(args, x, y):
     if args.kernel == 'rbf':
         return np.exp(-args.kernel_gamma * np.linalg.norm(x - y) ** 2)
@@ -37,16 +38,15 @@ def smo(args, K, train_data, train_target, test_data=None, test_target=None):
     def predict(X):
         if X.ndim == 1:
             X = X.reshape(1, -1)
-        y = np.empty(X.shape[0])
-        for i, row in enumerate(X):
-            y[i] = sum(target * beta * kernel(args, row, dictum) for beta, dictum, target in zip(a, train_data, train_target))
+        y = np.zeros(X.shape[0])
+        weights = a * train_target
+        for i, w in enumerate(weights):
+            if w == 0: continue
+            for j, row in enumerate(X):
+                y[j] += w * kernel(args, row, train_data[i])
         return y + b
-    def predict_train_data(X):
-        if X.ndim == 1:
-            X = X.reshape(1, -1)
-        y = np.empty(X.shape[0])
-        for i, row in enumerate(X):
-            y[i] = sum(target * beta * K[i, j] for beta, j, target in zip(a, range(train_data.shape[0]), train_target))
+    def predict_train_data(indices):
+        y = (a * train_target * K[indices]).sum(axis=1)
         return y + b
     # Create initial weights
     a, b = np.zeros(len(train_data)), 0
@@ -61,14 +61,14 @@ def smo(args, K, train_data, train_target, test_data=None, test_target=None):
             # We want j != i, so we "skip" over the value of i
             j = j + (j >= i)
 
-            Ei = predict_train_data(train_data[i])[0] - train_target[i]
+            Ei = predict_train_data([i])[0] - train_target[i]
             KKT = (a[i] >= args.C - args.tolerance or train_target[i] * Ei >= -args.tolerance) \
                 and (a[i] <= args.tolerance or train_target[i] * Ei <= args.tolerance)
             if not KKT:
                 second_derivative_aj = 2 * K[i, j] - K[i, i] - K[j, j]
                 if second_derivative_aj > -args.tolerance:
                     continue
-                Ej = predict_train_data(train_data[j])[0] - train_target[j]
+                Ej = predict_train_data([j])[0] - train_target[j]
                 aj_new = a[j] - train_target[j] * (Ei - Ej) / second_derivative_aj
                 equal_targets = train_target[i] == train_target[j]
                 L = max(0, a[j] - (args.C - a[i] if equal_targets else a[i]))
@@ -97,7 +97,7 @@ def smo(args, K, train_data, train_target, test_data=None, test_target=None):
 
                 as_changed = True
 
-        train_acc = accuracy_score((train_target + 1) / 2, predict_train_data(train_data) > 0)
+        train_acc = accuracy_score((train_target + 1) / 2, predict_train_data(range(train_data.shape[0])) > 0)
         train_accs.append(train_acc)
         if test_data is not None:
             test_acc = accuracy_score((test_target + 1) / 2, predict(test_data) > 0)
