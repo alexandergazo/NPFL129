@@ -54,18 +54,13 @@ class RFFsTransformer(sklearn.base.TransformerMixin):
     def fit(self, X, y=None):
         generator = np.random.RandomState(self._seed)
 
-        # TODO: Generate suitable `w` and `b`.
-        # To obtain deterministic results, generate
-        # - `w` first, using a single `generator.normal` call with
-        #   output shape `(input_features, self._n_components)`
-        # - `b` second, using a single `generator.uniform` call
-        #   with output shape `(self._n_components,)`
+        self._w = np.sqrt(2 * self._gamma) * generator.normal(size=(X.shape[1], self._n_components))
+        self._b = generator.uniform(0, 2 * np.pi, size=(self._n_components,))
 
         return self
 
     def transform(self, X):
-        # TODO: Transform the given `X` using precomputed `w` and `b`.
-        raise NotImplementedError()
+        return np.sqrt(2 / self._n_components) * np.cos(X @ self._w + self._b)
 
 class NystroemTransformer(sklearn.base.TransformerMixin):
     def __init__(self, n_components, gamma, seed):
@@ -74,32 +69,29 @@ class NystroemTransformer(sklearn.base.TransformerMixin):
         self._seed = seed
 
     def _rbf_kernel(self, X, Z):
-        # TODO: Compute the RBF kernel with `self._gamma` for
-        # given two sets of examples.
-        #
-        # A reasonably efficient implementation should probably compute the
-        # kernel line-by-line, computing K(X_i, Z) using a single `np.linalg.norm`
-        # call, and then concatenate the results using `np.stack`.
-        raise NotImplementedError()
+        kernel = np.empty((X.shape[0], Z.shape[0]))
+        for i, x in enumerate(X):
+            kernel[i] = np.exp(-self._gamma * np.linalg.norm(Z - x, axis=1) ** 2)
+        return kernel
 
     def fit(self, X, y=None):
         generator = np.random.RandomState(self._seed)
 
-        # TODO: Choose a random subset of examples, utilizing indices
-        #   indices = generator.choice(X.shape[0], size=self._n_components, replace=False)
-        #
-        # Then, compute K as the RBF kernel of the chosen examples and
-        # V as K^{-1/2} -- use `np.linalg.svd(K, hermitian=True)` to compute
-        # the SVD (equal to eigenvalue decomposition for real symmetric matrices).
-        # Add 1e-12 to the diagonal matrix returned by SVD before computing
-        # the inverse of the square root.
+        indices = generator.choice(X.shape[0], size=self._n_components, replace=False)
+
+        K = self._rbf_kernel(X[indices], X[indices])
+
+        U, D, V = np.linalg.svd(K)
+        D_inv = np.power(D + 1e-12, -1/2)
+
+        self._training_subset = X[indices]
+        self._V = (U * D_inv) @ V
 
         return self
 
     def transform(self, X):
-        # TODO: Compute the RBF kernel of `X` and the chosen training examples
-        # and then process it using the precomputed `V`.
-        raise NotImplementedError()
+        K = self._rbf_kernel(X, self._training_subset)
+        return K @ self._V
 
 def main(args):
     # Use the digits dataset.
