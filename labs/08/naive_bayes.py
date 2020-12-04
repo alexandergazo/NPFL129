@@ -6,6 +6,7 @@ import scipy.stats
 
 import sklearn.datasets
 import sklearn.model_selection
+from sklearn.metrics import accuracy_score
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
@@ -25,27 +26,52 @@ def main(args):
     train_data, test_data, train_target, test_target = sklearn.model_selection.train_test_split(
         data, target, test_size=args.test_size, random_state=args.seed)
 
-    # TODO: Train a naive Bayes classifier on the train data.
-    #
-    # The `args.naive_bayes_type` can be one of:
-    # - "gaussian": implement Gaussian NB training, by estimating mean and
-    #   variance of the input features. For variance estimation use
-    #     1/N * \sum_x (x - mean)^2
-    #   and additionally increase all estimated variances by `args.alpha`.
-    #
-    #   During prediction, you can compute probability density function of a Gaussian
-    #   distribution using `scipy.stats.norm`, which offers `pdf` and `logpdf`
-    #   methods, among others.
-    #
-    # - "multinomial": Implement multinomial NB with smoothing factor `args.alpha`.
-    #
-    # - "bernoulli": Implement Bernoulli NB with smoothing factor `args.alpha`.
-    #   Do not forget that Bernoulli NB works with binary data, so consider
-    #   all non-zero features as ones during both estimation and prediction.
+    if args.naive_bayes_type == 'gaussian':
+        means = np.empty((args.classes, data.shape[1]))
+        variances = np.empty_like(means)
+        class_prob = np.empty(args.classes)
+        for i in range(args.classes):
+            means[i] = np.mean(train_data[train_target == i], axis=0)
+            variances[i] = np.var(train_data[train_target == i], axis=0) + args.alpha
+            class_prob[i] = (train_target == i).sum() / train_data.shape[0]
 
-    # TODO: Predict the test data classes and compute test accuracy.
-    test_accuracy = None
+        from scipy.stats import norm
+        predictions = []
+        for dictum in test_data:
+            probs = [class_prob[i] * np.prod(norm.pdf(dictum, means[i], np.sqrt(variances[i])))
+                     for i in range(args.classes)]
+            predictions.append(np.argmax(probs))
+    elif args.naive_bayes_type == 'multinomial':
+        biases = np.array([(train_target == i).sum() for i in range(args.classes)]) / train_data.shape[0]
+        weights = np.empty((args.classes, data.shape[1]))
+        for i in range(args.classes):
+            sums = np.sum(train_data[train_target == i], axis=0)
+            weights[i] = (sums + args.alpha) / (sums.sum() + args.alpha * data.shape[1])
 
+        weights, biases = np.log(weights), np.log(biases)
+
+        predictions = []
+        for dictum in test_data:
+            probs = weights @ dictum + biases
+            predictions.append(np.argmax(probs))
+
+    elif args.naive_bayes_type == 'bernoulli':
+        biases = np.array([(train_target == i).sum() for i in range(args.classes)]) / train_data.shape[0]
+        p = np.empty((args.classes, data.shape[1]))
+        for i in range(args.classes):
+            sums = np.sum(train_data[train_target == i] > 0, axis=0)
+            p[i] = (sums + args.alpha) / ((train_target == i).sum() + args.alpha * 2)
+
+        biases = np.log(biases)
+
+        predictions = []
+        for dictum in test_data:
+            probs = np.log(p) @ (dictum > 0) + np.log(1 - p) @ (dictum == 0) + biases
+            predictions.append(np.argmax(probs))
+    else:
+        raise ValueError(f'Unknown naive_bayes_type value "{args.naive_bayes_type}".')
+
+    test_accuracy = accuracy_score(test_target, predictions)
     return test_accuracy
 
 if __name__ == "__main__":
