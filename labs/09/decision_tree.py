@@ -21,7 +21,7 @@ parser.add_argument("--test_size", default=42, type=lambda x:int(x) if x.isdigit
 # If you add more arguments, ReCodEx will keep them with your default values.
 
 
-class Dataset(object):
+class Dataset:
     """
     This class is a representation of a (subset of) dataset optimized for splitting needed for construction of
     regression trees. Actual data are not copied, indices are kept, only.
@@ -174,7 +174,7 @@ class DecisionNode:
             return '{} <={:5.2f}'.format(self.attr, self.value)
 
 
-class LeafNode(object):
+class LeafNode:
     def __init__(self, response):
         self.response = response
 
@@ -198,9 +198,9 @@ def evaluate_all(model, data):
     return np.r_[[model.evaluate(x) for x in data.to_dict()]]
 
 
-class ClassificationTree(object):
-    def __init__(self, criterion, data, tattr, xattrs=None, max_depth=5,
-                 max_features=lambda n: n,
+class ClassificationTree:
+    def __init__(self, data, tattr, xattrs=None, criterion='gini', max_depth=5,
+                 feature_subsampling=1,
                  min_to_split=2,
                  rng=np.random.default_rng(1)):
         """
@@ -210,10 +210,10 @@ class ClassificationTree(object):
         :param tattr: the name of target attribute column
         :param xattrs: list of names of the input attribute columns
         :param max_depth: limit on tree depth
-        :param max_features: the number of features considered when splitting a node (all by default)
+        :param feature_subsampling: float fraction of used features
         :param rng: random number generator used for sampling features when selecting a split candidate
         """
-        self.xattrs = [c for c in data.columns if c != tattr] if xattrs is None else xattrs
+        self.xattrs = [c for c in data.columns if c != tattr] if xattrs is None else np.array(xattrs)
         if isinstance(criterion, str):
             self.criterion = get_criterion(criterion)
         elif isinstance(criterion, callable):
@@ -221,7 +221,7 @@ class ClassificationTree(object):
         else:
             raise ValueError('Criterion must be string or callable.')
         self.tattr = tattr
-        self.max_features = int(np.ceil(max_features(len(self.xattrs))))
+        self.feature_subsampling = feature_subsampling
         self.rng = rng
         self.min_to_split = min_to_split
         self.root = self.build_tree(data, self.criterion(data, tattr),
@@ -238,9 +238,11 @@ class ClassificationTree(object):
     def build_tree(self, data, criterion_value, max_depth):
         if max_depth > 0 and len(data) >= self.min_to_split:
             best_crit = criterion_value
-            # xattrs = self.rng.choice(self.xattrs, self.max_features,
-            #                          replace=False)  # select attributes to be considered
-            for xattr in self.xattrs:
+            if self.feature_subsampling < 1:
+                xattrs = self.xattrs[self.rng.uniform(size=len(self.xattrs)) <= self.feature_subsampling]
+            else:
+                xattrs = self.xattrs
+            for xattr in xattrs:
                 x = np.sort(data[xattr])
                 if not np.issubdtype(x.dtype, np.number):
                     continue
@@ -308,8 +310,9 @@ def main(args):
 
     train_data = Dataset(train_data)
     test_data = Dataset(test_data)
-    classificator = ClassificationTree(args.criterion, train_data, xattrs=dataset.feature_names, tattr='target',
-                                       min_to_split=args.min_to_split, max_depth=args.max_depth)
+    classificator = ClassificationTree(train_data, xattrs=dataset.feature_names, tattr='target',
+                                       min_to_split=args.min_to_split, max_depth=args.max_depth,
+                                       criterion=args.criterion)
 
     if not args.recodex: classificator.plot()
 
