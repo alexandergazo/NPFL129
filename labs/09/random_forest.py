@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 
+from decision_tree import ClassificationTree, Dataset, evaluate_all
+
 import numpy as np
 import sklearn.datasets
-import sklearn.metrics
+from sklearn.metrics import accuracy_score
 import sklearn.model_selection
+from scipy.stats import mode
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
@@ -19,46 +22,27 @@ parser.add_argument("--trees", default=1, type=int, help="Number of trees in the
 
 def main(args):
     # Use the wine dataset
-    data, target = sklearn.datasets.load_wine(return_X_y=True)
+    dataset = sklearn.datasets.load_wine(as_frame=True)
 
-    # Split the data randomly to train and test using `sklearn.model_selection.train_test_split`,
-    # with `test_size=args.test_size` and `random_state=args.seed`.
-    train_data, test_data, train_target, test_target = sklearn.model_selection.train_test_split(
-        data, target, test_size=args.test_size, random_state=args.seed)
+    train_data, test_data = sklearn.model_selection.train_test_split(
+        dataset.frame, test_size=args.test_size, random_state=args.seed)
 
-    # TODO: Create a random forest on the trainining data.
-    #
-    # For determinism, create a generator
-    #   generator = np.random.RandomState(args.seed)
-    # at the beginning and then use this instance for all random number generation.
-    #
-    # Use a simplified decision tree from the `decision_tree` assignment. The
-    # tree needs to support only the `entropy` criterion and `max_depth` constraint.
-    # When splitting nodes, proceed in the depth-first order, splitting all nodes
-    # in left subtrees before nodes in right subtrees.
-    #
-    # Additionally, implement:
-    # - feature subsampling: when searching for the best split, try only
-    #   a subset of features. When splitting a node, start by generating
-    #   a feature mask using
-    #     generator.uniform(size=number_of_features) <= feature_subsampling
-    #   which gives a boolean value for every feature, with `True` meaning the
-    #   feature is used during best split search, and `False` it is not.
-    #   (When feature_subsampling == 1, all features are used.)
-    #
-    # - train a random forest consisting of `args.trees` decision trees
-    #
-    # - if `args.bootstrapping` is set, right before training a decision tree,
-    #   create a bootstrap sample of the training data using the following indices
-    #     indices = generator.choice(len(train_data), size=len(train_data))
-    #   and if `args.bootstrapping` is not set, use the original training data.
-    #
-    # During prediction, use voting to find the most frequent class for a given
-    # input, choosing the one with smallest class index in case of a tie.
+    rng = np.random.RandomState(args.seed)
 
-    # TODO: Finally, measure the training and testing accuracy.
-    train_accuracy = None
-    test_accuracy = None
+    train_data, test_data = Dataset(train_data), Dataset(test_data)
+
+    forest = [ClassificationTree(train_data.get_bootstrap(rng=rng) if args.bootstrapping else train_data,
+                                 xattrs=dataset.feature_names, tattr='target', rng=rng,
+                                 criterion='entropy', max_depth=args.max_depth,
+                                 feature_subsampling=args.feature_subsampling)
+              for _ in range(args.trees)]
+
+    # haskell? pls
+    test_predictions = mode(np.array(list(map(lambda tree: evaluate_all(tree, test_data), forest))), axis=0).mode.flatten()
+    train_predictions = mode(np.array(list(map(lambda tree: evaluate_all(tree, train_data), forest))), axis=0).mode.flatten()
+
+    train_accuracy = accuracy_score(train_data['target'], train_predictions)
+    test_accuracy = accuracy_score(test_data['target'], test_predictions)
 
     return train_accuracy, test_accuracy
 
