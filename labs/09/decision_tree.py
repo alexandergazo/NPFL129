@@ -236,12 +236,9 @@ class ClassificationTree:
         return self.root.evaluate(x)
 
     def build_tree(self, data, criterion_value, max_depth):
-        if max_depth > 0 and len(data) >= self.min_to_split:
+        if max_depth > 0 and len(data) >= self.min_to_split and criterion_value:
             best_crit = criterion_value
-            if self.feature_subsampling < 1:
-                xattrs = self.xattrs[self.rng.uniform(size=len(self.xattrs)) <= self.feature_subsampling]
-            else:
-                xattrs = self.xattrs
+            xattrs = self.xattrs[self.rng.uniform(size=len(self.xattrs)) <= self.feature_subsampling]
             for xattr in xattrs:
                 x = np.sort(data[xattr])
                 if not np.issubdtype(x.dtype, np.number):
