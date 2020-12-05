@@ -10,6 +10,11 @@ import zipfile
 import numpy as np
 import pandas as pd
 
+import sklearn
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import GradientBoostingClassifier, AdaBoostClassifier
+
+from itertools import chain
 
 class Dataset:
     CLASSES = ["sitting", "sittingdown", "standing", "standingup", "walking"]
@@ -40,9 +45,13 @@ def main(args):
         # We are training a model.
         np.random.seed(args.seed)
         train = Dataset()
+        train_data, test_data, train_target, test_target = train_test_split(
+            train.data, train.target, test_size=0.5)
 
-        # TODO: Train a model on the given dataset and store it in `model`.
-        model = None
+        model = GradientBoostingClassifier(verbose=11)
+        model = AdaBoostClassifier(sklearn.tree.DecisionTreeClassifier(max_depth=13))
+        model = GridSearchCV(AdaBoostClassifier(), {'base_estimator': list(chain(*[[sklearn.tree.DecisionTreeClassifier(max_depth=i, class_weight=mode) for mode in ['balanced', None]] for i in range(20)]))}, verbose=11, n_jobs=2)
+        model.fit(train.data, train.target)
 
         # Serialize the model.
         with lzma.open(args.model_path, "wb") as model_file:
@@ -55,9 +64,7 @@ def main(args):
         with lzma.open(args.model_path, "rb") as model_file:
             model = pickle.load(model_file)
 
-        # TODO: Generate `predictions` with the test set predictions, either
-        # as a Python list of a NumPy array.
-        predictions = None
+        predictions = model.predict(test.data)
 
         return predictions
 
